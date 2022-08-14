@@ -54,6 +54,7 @@ def generate_image(
     image_prompts: List[Image.Image] = [],
     continue_prev_run: bool = False,
     seed: Optional[int] = None,
+    cutn: int = 32,
     mse_weight: float = 0,
     mse_weight_decay: float = 0,
     mse_weight_decay_steps: int = 0,
@@ -76,6 +77,7 @@ def generate_image(
         image_x=image_x,
         image_y=image_y,
         seed=seed,
+        cutn=cutn,
         init_image=init_image,
         image_prompts=image_prompts,
         continue_prev_run=continue_prev_run,
@@ -136,7 +138,7 @@ def generate_image(
     frames = []
 
     try:
-        # Try block catches st.script_runner.StopExecution, no need of a dedicated stop button
+        # Try block catches st.StopExecution, no need of a dedicated stop button
         # Reason is st.form is meant to be self-contained either within sidebar, or in main body
         # The way the form is implemented in this app splits the form across both regions
         # This is intended to prevent the model settings from crowding the main body
@@ -208,6 +210,7 @@ def generate_image(
             "continue_prev_run": continue_prev_run,
             "prev_run_id": prev_run_id,
             "seed": run.seed,
+            "cutn": cutn,
             "Xdim": image_x,
             "ydim": image_y,
             "vqgan_ckpt": vqgan_ckpt,
@@ -246,7 +249,7 @@ def generate_image(
 
         status_text.text("Done!")  # End of run
 
-    except st.script_runner.StopException as e:
+    except st.StopException as e:
         # Dump output to dashboard
         print(f"Received Streamlit StopException")
         status_text.text("Execution interruped, dumping outputs ...")
@@ -289,6 +292,7 @@ def generate_image(
             "continue_prev_run": continue_prev_run,
             "prev_run_id": prev_run_id,
             "seed": run.seed,
+            "cutn": cutn,
             "Xdim": image_x,
             "ydim": image_y,
             "vqgan_ckpt": vqgan_ckpt,
@@ -429,6 +433,29 @@ if __name__ == "__main__":
                 st.error("seed input needs to be int")
         else:
             seed = None
+
+        #cutn = st.sidebar.checkbox(
+        #    "Set Cutn",
+        #    value=defaults["cutn"],
+        #   help="Check to set the number of cuts to pass to CLIP, lower values uses less VRAM, higher values increases the image quality. Will add option to specify the number of cuts",
+        #)
+
+        use_cutn = st.sidebar.checkbox(
+            "Use Cutn",
+            value=defaults["use_cutn"],
+            help="Check to set the number of cuts to pass to CLIP, lower values uses less VRAM, higher values increase the image quality. Will add option to specify the number of cuts",
+        )
+        cutn = st.sidebar.empty()
+        if use_cutn is True:
+            cutn = cutn.number_input(
+                "Number of Cuts sent to CLIP",
+                value=defaults["cutn"],
+                min_value=1,
+                step=1,
+                help="Specify the number of cuts to pass to CLIP, lower values uses less VRAM but higher values increases the image quality",
+            )
+        else:
+            cutn = 32
 
         use_custom_starting_image = st.sidebar.checkbox(
             "Use starting image",
@@ -645,6 +672,7 @@ if __name__ == "__main__":
             image_x=int(image_x),
             image_y=int(image_y),
             seed=int(seed) if set_seed is True else None,
+            cutn=int(cutn),
             init_image=init_image,
             image_prompts=image_prompts,
             continue_prev_run=continue_prev_run,

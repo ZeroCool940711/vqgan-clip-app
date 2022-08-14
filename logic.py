@@ -70,6 +70,7 @@ class VQGANCLIPRun(Run):
         image_prompts: List[Image.Image] = [],
         continue_prev_run: bool = False,
         seed: Optional[int] = None,
+        cutn: int = 32,
         mse_weight=0.5,
         mse_weight_decay=0.1,
         mse_weight_decay_steps=50,
@@ -98,6 +99,7 @@ class VQGANCLIPRun(Run):
         self.image_prompts = image_prompts
         self.continue_prev_run = continue_prev_run
         self.seed = seed
+        self.cutn = cutn
 
         # Setup ------------------------------------------------------------------------------
         # Split text by "|" symbol
@@ -121,7 +123,8 @@ class VQGANCLIPRun(Run):
             vqgan_config=f"assets/{vqgan_ckpt}.yaml",
             vqgan_checkpoint=f"assets/{vqgan_ckpt}.ckpt",
             step_size=0.05,
-            cutn=64,
+            #cutn=32,
+            cutn=cutn,
             cut_pow=1.0,
             display_freq=50,
             seed=seed,
@@ -213,6 +216,7 @@ class VQGANCLIPRun(Run):
         self.z_max = self.model.quantize.embedding.weight.max(dim=0).values[
             None, :, None, None
         ]
+
 
         if self.seed is not None:
             torch.manual_seed(self.seed)
