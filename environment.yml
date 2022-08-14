@@ -4,11 +4,11 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - pytorch::pytorch=1.10.0
-  - pytorch::torchvision=0.11.1
-  - cudatoolkit=10.2
+  - pytorch::pytorch=1.12.0
+  - pytorch::torchvision=0.13.1
+  - cudatoolkit=10.2 # The cudatoolkit library could also be updated to 11.3 but might give some troubles with older GPUs, for an RTX 3050 or higher cudatoolkit=11.3 is recommended.
   - omegaconf
-  - pytorch-lightning
+  - pytorch-lightning=1.5.8 # For compatibility
   - tqdm
   - regex
   - kornia
