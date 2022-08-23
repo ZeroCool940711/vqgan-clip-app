@@ -1,11 +1,16 @@
 # Modify for different systems, e.g. larger default xdim/ydim for more powerful GPUs
-num_steps: 500
-Xdim: 511
-ydim: 511
+use_clip_model: false
+clip_model: ViT-B/32
+num_steps: -1
+Xdim: 662
+ydim: 360
 set_seed: false
 seed: 0
-use_cutn: true
+use_cutn: false
 cutn: 32
+cut_pow: 1.0
+custom_step_size: false
+step_size: 0.05
 use_starting_image: false
 use_image_prompts: false
 continue_prev_run: false
@@ -13,5 +18,6 @@ mse_weight: 0.5
 mse_weight_decay: 0.1
 mse_weight_decay_steps: 50
 use_mse_regularization: false
-use_tv_loss_regularization: true
-tv_loss_weight: 1e-3
+use_tv_loss_regularization: false
+# best values for tv_loss_weight are 0.000085, 0.0001 or 0.0002
+tv_loss_weight: 0.000085
