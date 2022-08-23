@@ -63,6 +63,7 @@ class VQGANCLIPRun(Run):
         self,
         text_input: str = "the first day of the waters",
         vqgan_ckpt: str = "vqgan_imagenet_f16_16384",
+        clip_model: str = "ViT-B/32",
         num_steps: int = 300,
         image_x: int = 300,
         image_y: int = 300,
@@ -71,10 +72,12 @@ class VQGANCLIPRun(Run):
         continue_prev_run: bool = False,
         seed: Optional[int] = None,
         cutn: int = 32,
+        cut_pow: float = 1.0,
+        step_size: float = 0.05,
         mse_weight=0.5,
         mse_weight_decay=0.1,
         mse_weight_decay_steps=50,
-        tv_loss_weight=1e-3,
+        tv_loss_weight=0.000085,
         use_cutout_augmentations: bool = True,
         # use_augs: bool = True,
         # noise_fac: float = 0.1,
@@ -87,11 +90,12 @@ class VQGANCLIPRun(Run):
         rotation_angle: float = 0,
         zoom_factor: float = 1,
         transform_interval: int = 10,
-        device: Optional[torch.device] = None,
+        device: Optional[torch.device] = "cpu",
     ) -> None:
         super().__init__()
         self.text_input = text_input
         self.vqgan_ckpt = vqgan_ckpt
+        self.clip_model = clip_model
         self.num_steps = num_steps
         self.image_x = image_x
         self.image_y = image_y
@@ -100,6 +104,9 @@ class VQGANCLIPRun(Run):
         self.continue_prev_run = continue_prev_run
         self.seed = seed
         self.cutn = cutn
+        self.cut_pow = cut_pow
+        self.step_size = step_size
+        self.device = device
 
         # Setup ------------------------------------------------------------------------------
         # Split text by "|" symbol
@@ -117,23 +124,25 @@ class VQGANCLIPRun(Run):
             init_image=init_image,
             init_weight=mse_weight,
             # clip.available_models()
-            # ['RN50', 'RN101', 'RN50x4', 'ViT-B/32']
+            # ['RN50', 'RN101', 'RN50x4', 'RN50x16', 'RN50x64', 'ViT-B/32', 'ViT-B/16', 'ViT-L/14', 'ViT-L/14@336px']
             # Visual Transformer seems to be the smallest
-            clip_model="ViT-B/32",
+            clip_model=clip_model,
             vqgan_config=f"assets/{vqgan_ckpt}.yaml",
             vqgan_checkpoint=f"assets/{vqgan_ckpt}.ckpt",
-            step_size=0.05,
-            #cutn=32,
             cutn=cutn,
-            cut_pow=1.0,
+            cut_pow=cut_pow,
+            step_size=step_size,
             display_freq=50,
             seed=seed,
+            device=device,
         )
 
-        if device is None:
-            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        if device is None or device == "cpu":
+            #self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            device = torch.device("cpu")            
         else:
-            self.device = device
+            #self.device = device
+            self.device = torch.device(f"{device}" if torch.cuda.is_available() else "cpu")
 
         print("Using device:", device)
 
@@ -319,11 +328,14 @@ class VQGANCLIPRun(Run):
             result[f"prompt_loss_{count}"] = prompt(iii)
 
         return result
-
+    
     def iterate(self) -> Tuple[List[float], Image.Image]:
         if not self.use_scrolling_zooming:
             # Forward prop
             self.opt.zero_grad()
+            #for param in self.model.parameters():
+                #param.grad = None
+                
             losses = self._ascend_txt()
 
             # Grab an image
@@ -386,6 +398,9 @@ class VQGANCLIPRun(Run):
             for _ in range(self.transform_interval):
                 # Forward prop
                 self.opt.zero_grad()
+                #for param in self.model.parameters():
+                    #param.grad = None
+                    
                 losses = self._ascend_txt()
 
                 # Grab an image
@@ -397,9 +412,13 @@ class VQGANCLIPRun(Run):
                 self.opt.step()
                 with torch.no_grad():
                     self.z.copy_(self.z.maximum(self.z_min).minimum(self.z_max))
-
+                    
             # Advance iteration counter
             self.iterate_counter += 1
+            
+            for param_group in self.opt.param_groups:
+                #print (param_group)    
+                print (f"Learning Rate: {param_group['lr']}")
 
             print(
                 f"Step {self.iterate_counter} losses: {[(i, j.item()) for i, j in losses.items()]}"
