@@ -11,10 +11,12 @@ import sys
 import datetime
 import shutil
 import torch
-import json
-import os
+import json, time
+import os, io, timeit
 import base64
 import traceback
+import clip
+from stqdm import stqdm
 
 import argparse
 
@@ -43,10 +45,12 @@ try:
 except ModuleNotFoundError:
     pass
 
+#os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:30"
 
 def generate_image(
     text_input: str = "the first day of the waters",
     vqgan_ckpt: str = "vqgan_imagenet_f16_16384",
+    clip_model: str = "ViT-B/32",
     num_steps: int = 300,
     image_x: int = 300,
     image_y: int = 300,
@@ -55,6 +59,8 @@ def generate_image(
     continue_prev_run: bool = False,
     seed: Optional[int] = None,
     cutn: int = 32,
+    cut_pow: float = 1.0,
+    step_size: float = 0.05,
     mse_weight: float = 0,
     mse_weight_decay: float = 0,
     mse_weight_decay_steps: int = 0,
@@ -73,11 +79,14 @@ def generate_image(
     run = VQGANCLIPRun(
         text_input=text_input,
         vqgan_ckpt=vqgan_ckpt,
+        clip_model=clip_model,
         num_steps=num_steps,
         image_x=image_x,
         image_y=image_y,
         seed=seed,
         cutn=cutn,
+        cut_pow=cut_pow,
+        step_size=step_size,
         init_image=init_image,
         image_prompts=image_prompts,
         continue_prev_run=continue_prev_run,
@@ -127,7 +136,10 @@ def generate_image(
 
     ### Model init -------------------------------------------------------------
     if continue_prev_run is True:
-        run.model_init(init_image=st.session_state["prev_im"])
+        try:
+            run.model_init(init_image=st.session_state["prev_im"])
+        except KeyError:
+            run.model_init(init_image=Image.open("prev_image.png"))
     elif init_image is not None:
         run.model_init(init_image=init_image)
     else:
@@ -145,25 +157,52 @@ def generate_image(
         # However, touching any button resets the app state, making it impossible to
         # implement a stop button that can still dump output
         # Thankfully there's a built-in stop button :)
+        
         while True:
             # While loop to accomodate running predetermined steps or running indefinitely
-            status_text.text(f"Running step {step_counter}")
+            
+            # trying to check how long it takes to execute each loop which should give us how long it took to process each image generation iteration.
+            start = timeit.default_timer()
 
-            _, im = run.iterate()
+            _, im = run.iterate()           
 
             if num_steps > 0:  # skip when num_steps = -1
                 step_progress_bar.progress((step_counter + 1) / num_steps)
             else:
                 step_progress_bar.progress(100)
+              
+            duration = timeit.default_timer() - start
+            
+            if duration >= 1:
+                speed = "s/it"
+            else:
+                speed = "it/s"
+                duration = 1 / duration
+            
+            if num_steps > 0:
+                total_number_steps = f"/{num_steps}"
+                percent = f"%{100 * float(step_counter)/float(num_steps)}"
+            else:
+                total_number_steps = ""
+                percent = ""
+            
+            status_text.text(f"Running step: {step_counter}{total_number_steps} {percent} | {duration:.2f}{speed}")
 
             # At every step, display and save image
             im_display_slot.image(im, caption="Output image", output_format="PNG")
             st.session_state["prev_im"] = im
+            
+            try:
+                # Save prev_im.png
+                im.save(f"prev_image.png", format='PNG')
+            except (PermissionError,OSError):
+                # Save prev_im.png
+                im.save(f"prev_image.png", format='PNG')                
 
             # ref: https://stackoverflow.com/a/33117447/13095028
-            # im_byte_arr = io.BytesIO()
-            # im.save(im_byte_arr, format="JPEG")
-            # frames.append(im_byte_arr.getvalue()) # read()
+            #im_byte_arr = io.BytesIO()
+            #im.save(im_byte_arr, format="JPEG")
+            #frames.append(im_byte_arr.getvalue()) # read()
             frames.append(np.asarray(im))
 
             step_counter += 1
@@ -184,16 +223,28 @@ def generate_image(
         runoutputdir.mkdir()
 
         # Save final image
-        im.save(runoutputdir / "output.PNG", format="PNG")
+        im.save(runoutputdir / "output.png", format="PNG")
+        
+        # Save all the frames into the step folder so we can see the process better if we want to.
+        runoutputdir_step_folder = Path(f"{runoutputdir}/steps")
+        print (f"Saving frames to folder: {runoutputdir_step_folder}")
+        runoutputdir_step_folder.mkdir()
+        
+        frame_number = 0
+        for frame in frames:
+            #print (frame)
+            frame_data = Image.fromarray(frame)
+            frame_data.save(f"{runoutputdir_step_folder}/{frame_number}.png", format='PNG')
+            frame_number += 1
 
         # Save init image
         if init_image is not None:
-            init_image.save(runoutputdir / "init-image.JPEG", format="JPEG")
+            init_image.save(runoutputdir / "init-image.jpeg", format="JPEG")
 
         # Save image prompts
         for count, image_prompt in enumerate(image_prompts):
             image_prompt.save(
-                runoutputdir / f"image-prompt-{count}.JPEG", format="JPEG"
+                runoutputdir / f"image-prompt-{count}.jpeg", format="JPEG"
             )
 
         # Save animation
@@ -211,9 +262,12 @@ def generate_image(
             "prev_run_id": prev_run_id,
             "seed": run.seed,
             "cutn": cutn,
+            "cut_pow":cut_pow,
+            "step_size": step_size,
             "Xdim": image_x,
             "ydim": image_y,
             "vqgan_ckpt": vqgan_ckpt,
+            "clip_model": clip_model,
             "start_time": run_start_dt.strftime("%Y%m%dT%H%M%S"),
             "end_time": datetime.datetime.now().strftime("%Y%m%dT%H%M%S"),
             "mse_weight": mse_weight,
@@ -252,8 +306,10 @@ def generate_image(
     except st.StopException as e:
         # Dump output to dashboard
         print(f"Received Streamlit StopException")
-        status_text.text("Execution interruped, dumping outputs ...")
+        #status_text.text("Execution interruped, dumping outputs ...")
+        print("Execution interruped, dumping outputs ...")
         writer = imageio.get_writer("temp.mp4", fps=24)
+
         for frame in frames:
             writer.append_data(frame)
         writer.close()
@@ -263,19 +319,32 @@ def generate_image(
         runoutputdir = outputdir / (
             run_start_dt.strftime("%Y%m%dT%H%M%S") + "-" + run_id
         )
+        print ("Saving to folder: ", runoutputdir)
         runoutputdir.mkdir()
 
         # Save final image
-        im.save(runoutputdir / "output.PNG", format="PNG")
+        im.save(runoutputdir / "output.png", format="PNG")
+        
+        # Save all the frames into the step folder so we can see the process better if we want to.
+        runoutputdir_step_folder = Path(f"{runoutputdir}/steps")
+        print (f"Saving frames to folder: {runoutputdir_step_folder}")
+        runoutputdir_step_folder.mkdir()
+        
+        frame_number = 0
+        for frame in frames:
+            #print (frame)
+            frame_data = Image.fromarray(frame)
+            frame_data.save(f"{runoutputdir_step_folder}/{frame_number}.png", format='PNG')
+            frame_number += 1      
 
         # Save init image
         if init_image is not None:
-            init_image.save(runoutputdir / "init-image.JPEG", format="JPEG")
+            init_image.save(runoutputdir / "init-image.jpeg", format="JPEG")
 
         # Save image prompts
         for count, image_prompt in enumerate(image_prompts):
             image_prompt.save(
-                runoutputdir / f"image-prompt-{count}.JPEG", format="JPEG"
+                runoutputdir / f"image-prompt-{count}.jpeg", format="JPEG"
             )
 
         # Save animation
@@ -293,9 +362,12 @@ def generate_image(
             "prev_run_id": prev_run_id,
             "seed": run.seed,
             "cutn": cutn,
+            "cut_pow": cut_pow,
+            "step_size": step_size,
             "Xdim": image_x,
             "ydim": image_y,
             "vqgan_ckpt": vqgan_ckpt,
+            "clip_model": clip_model,
             "start_time": run_start_dt.strftime("%Y%m%dT%H%M%S"),
             "end_time": datetime.datetime.now().strftime("%Y%m%dT%H%M%S"),
             "mse_weight": mse_weight,
@@ -329,7 +401,9 @@ def generate_image(
         with open(runoutputdir / "details.json", "w") as f:
             json.dump(details, f, indent=4)
 
-        status_text.text("Done!")  # End of run
+        status_text.text("Done!")  # End of run        
+        
+        
 
 
 if __name__ == "__main__":
@@ -343,7 +417,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Select specific GPU if chosen
-    if args.gpu is not None:
+    if args.gpu is not None and args.gpu != "cpu":
         for i in args.gpu.split(","):
             assert (
                 int(i) < torch.cuda.device_count()
@@ -354,10 +428,13 @@ if __name__ == "__main__":
         except RuntimeError:
             print(traceback.format_exc())
     else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
         device = None
 
     defaults = OmegaConf.load("defaults.yaml")
     outputdir = Path("output")
+    #print (outputdir)
+    
     if not outputdir.exists():
         outputdir.mkdir()
 
@@ -398,6 +475,31 @@ if __name__ == "__main__":
             index=default_weight_index,
             help="Choose which weights to load, trained on different datasets. Make sure the weights and configs are downloaded to `assets/` as per the README!",
         )
+        
+        use_clip_model = st.sidebar.checkbox(
+            "Clip Model",
+            value=defaults["use_clip_model"],
+            help="Clip Model to use",
+        )
+        clip_model = st.sidebar.empty()
+        if use_clip_model is True:
+            clip_model = clip_model.text_input(
+                "Clip Model:",
+                value=defaults["clip_model"],
+                help="""Model Versions:‏‏‎ 
+                ‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎
+                Initially, we’ve released one CLIP model based on the Vision Transformer architecture equivalent to ViT-B/32, 
+                along with the RN50 model, using the architecture equivalent to ResNet-50.
+                As part of the staged release process, we have also released the RN101 model, as well as RN50x4,
+                a RN50 scaled up 4x according to the EfficientNet scaling rule. In July 2021, we additionally released the RN50x16 and ViT-B/16 models,
+                and in January 2022, the RN50x64 and ViT-L/14 models were released. Lastly, the ViT-L/14@336px model was released in April 2022.
+                ‎‎‎‎‎‎‎‎‎‎‎‎‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎  ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ ‎‏‏‎ 
+                Defautl = ViT-B/32 .                 
+                Available Models: """ + str(clip.available_models()),
+            )
+        else:
+            clip_model = "ViT-B/32"
+            
         num_steps = st.sidebar.number_input(
             "Num steps",
             value=defaults["num_steps"],
@@ -434,11 +536,17 @@ if __name__ == "__main__":
         else:
             seed = None
 
-        #cutn = st.sidebar.checkbox(
-        #    "Set Cutn",
-        #    value=defaults["cutn"],
-        #   help="Check to set the number of cuts to pass to CLIP, lower values uses less VRAM, higher values increases the image quality. Will add option to specify the number of cuts",
-        #)
+        continue_prev_run = st.sidebar.checkbox(
+            "Continue previous run",
+            value=defaults["continue_prev_run"],
+            help="Use existing image and existing weights for the next run. If yes, ignores 'Use starting image'",
+        )
+
+        use_cutout_augmentations = st.sidebar.checkbox(
+            "Use cutout augmentations",
+            value=True,
+            help="Adds cutout augmentatinos in the image generation process. Uses up to additional 4 GiB of GPU memory. Greatly improves image quality. Toggled on by default.",
+        )
 
         use_cutn = st.sidebar.checkbox(
             "Use Cutn",
@@ -446,6 +554,7 @@ if __name__ == "__main__":
             help="Check to set the number of cuts to pass to CLIP, lower values uses less VRAM, higher values increase the image quality. Will add option to specify the number of cuts",
         )
         cutn = st.sidebar.empty()
+        cut_pow = st.sidebar.empty()
         if use_cutn is True:
             cutn = cutn.number_input(
                 "Number of Cuts sent to CLIP",
@@ -454,8 +563,35 @@ if __name__ == "__main__":
                 step=1,
                 help="Specify the number of cuts to pass to CLIP, lower values uses less VRAM but higher values increases the image quality",
             )
+            cut_pow = cut_pow.number_input(
+                "Cut power.",
+                value=defaults["cut_pow"],
+                min_value=0.0001,
+                step=0.1,
+                help="Specify the power each cut will have.",
+            )            
         else:
             cutn = 32
+            cut_pow = 1.0
+
+
+        custom_step_size = st.sidebar.checkbox(
+            "Custom Step Size/Learing Rate",
+            value=defaults["custom_step_size"],
+            help="Customize the Step Size or Learning Rate value.",
+        )
+        step_size = st.sidebar.empty()
+        if custom_step_size is True:
+            step_size = step_size.number_input(
+                "Custom Step Size or Learning Rate",
+                value=defaults["step_size"],
+                min_value=0.0001,
+                step=0.001,
+                help="Specify a custom Step Size or Learning Rate to use. Ref: https://en.wikipedia.org/wiki/Learning_rate",
+                format="%.5f",
+            )
+        else:
+            step_size = 0.05
 
         use_custom_starting_image = st.sidebar.checkbox(
             "Use starting image",
@@ -498,12 +634,6 @@ if __name__ == "__main__":
                 image_prompts = [Image.open(i).convert("RGB") for i in image_prompts]
         else:
             image_prompts = []
-
-        continue_prev_run = st.sidebar.checkbox(
-            "Continue previous run",
-            value=defaults["continue_prev_run"],
-            help="Use existing image and existing weights for the next run. If yes, ignores 'Use starting image'",
-        )
 
         use_mse_reg = st.sidebar.checkbox(
             "Use MSE regularization",
@@ -552,9 +682,9 @@ if __name__ == "__main__":
                 "TV loss weight",
                 value=defaults["tv_loss_weight"],
                 min_value=0.0,
-                step=1e-4,
-                help="Set weights for TV loss regularization, which encourages spatial smoothness. Ref: https://github.com/jcjohnson/neural-style/issues/302",
-                format="%.1e",
+                step=0.0001,
+                help="Set weights for TV loss regularization, which encourages spatial smoothness, the lower the value the better the result. Some good values are are 0.000085, 0.0001 or 0.0002 Ref: https://github.com/jcjohnson/neural-style/issues/302",
+                format="%.6f",
             )
         else:
             tv_loss_weight = 0
@@ -587,10 +717,11 @@ if __name__ == "__main__":
             zoom_factor = zoom_factor_widget.number_input(
                 "Zoom factor",
                 value=1.0,
-                min_value=0.1,
-                max_value=10.0,
-                step=0.02,
-                format="%.2f",
+                min_value=-100.0,
+                max_value=100.0,
+                step=0.0001,
+                help="Factor to zoom in each frame, 1 is no zoom, less than 1 is zoom out, more than 1 is zoom in.",
+                format="%.4f",
             )
             transform_interval = transform_interval_widget.number_input(
                 "Iterations per frame",
@@ -606,18 +737,12 @@ if __name__ == "__main__":
             zoom_factor = 1
             transform_interval = 1
 
-        use_cutout_augmentations = st.sidebar.checkbox(
-            "Use cutout augmentations",
-            value=True,
-            help="Adds cutout augmentatinos in the image generation process. Uses up to additional 4 GiB of GPU memory. Greatly improves image quality. Toggled on by default.",
-        )
-
         submitted = st.form_submit_button("Run!")
         # End of form
 
     status_text = st.empty()
     status_text.text("Pending input prompt")
-    step_progress_bar = st.progress(0)
+    step_progress_bar = st.progress(0)    
 
     im_display_slot = st.empty()
     vid_display_slot = st.empty()
@@ -668,11 +793,13 @@ if __name__ == "__main__":
             # Inputs
             text_input=text_input,
             vqgan_ckpt=radio,
+            clip_model=clip_model,
             num_steps=num_steps,
             image_x=int(image_x),
             image_y=int(image_y),
             seed=int(seed) if set_seed is True else None,
             cutn=int(cutn),
+            step_size=float(step_size),
             init_image=init_image,
             image_prompts=image_prompts,
             continue_prev_run=continue_prev_run,
