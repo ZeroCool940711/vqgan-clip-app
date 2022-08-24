@@ -181,7 +181,7 @@ def generate_image(
             
             if num_steps > 0:
                 total_number_steps = f"/{num_steps}"
-                percent = f"%{100 * float(step_counter)/float(num_steps)}"
+                percent = f"{100 * float(step_counter)/float(num_steps):.2f}%"
             else:
                 total_number_steps = ""
                 percent = ""
@@ -585,7 +585,7 @@ if __name__ == "__main__":
             step_size = step_size.number_input(
                 "Custom Step Size or Learning Rate",
                 value=defaults["step_size"],
-                min_value=0.0001,
+                min_value=0.00001,
                 step=0.001,
                 help="Specify a custom Step Size or Learning Rate to use. Ref: https://en.wikipedia.org/wiki/Learning_rate",
                 format="%.5f",
