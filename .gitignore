@@ -5,9 +5,13 @@
 # VQGAN weights
 assets/*.ckpt
 assets/*.yaml
+assets/*
 
 # Outputs
 output*
+
+# samples
+samples/*
 
 # Test data
 test-samples/
