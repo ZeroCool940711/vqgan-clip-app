@@ -100,7 +100,7 @@ def generate_image(
     frames = []
 
     try:
-        # Try block catches st.script_runner.StopExecution, no need of a dedicated stop button
+        # Try block catches st.StopExecution, no need of a dedicated stop button
         # Reason is st.form is meant to be self-contained either within sidebar, or in main body
         # The way the form is implemented in this app splits the form across both regions
         # This is intended to prevent the model settings from crowding the main body
@@ -181,7 +181,7 @@ def generate_image(
 
         status_text.text("Done!")  # End of run
 
-    except st.script_runner.StopException as e:
+    except st.StopException as e:
         # Dump output to dashboard
         print(f"Received Streamlit StopException")
         status_text.text("Execution interruped, dumping outputs ...")
