@@ -27,6 +27,7 @@ from typing import Optional, List
 from omegaconf import OmegaConf
 import imageio
 import numpy as np
+from retry import retry
 
 # Catch import issue, introduced in version 1.1
 # Deprecate in a few minor versions
@@ -47,6 +48,12 @@ except ModuleNotFoundError:
 
 #os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:30"
 
+@retry((PermissionError, OSError), tries=5, delay=2)
+def save_preview_image(im):
+    """Save the preview image and in case we get any error try again."""
+    # Save prev_im.png
+    im.save(f"prev_image.png", format='PNG')
+
 def generate_image(
     text_input: str = "the first day of the waters",
     vqgan_ckpt: str = "vqgan_imagenet_f16_16384",
@@ -61,6 +68,7 @@ def generate_image(
     cutn: int = 32,
     cut_pow: float = 1.0,
     step_size: float = 0.05,
+    opt_name: str = "Adam",
     mse_weight: float = 0,
     mse_weight_decay: float = 0,
     mse_weight_decay_steps: int = 0,
@@ -87,6 +95,7 @@ def generate_image(
         cutn=cutn,
         cut_pow=cut_pow,
         step_size=step_size,
+        opt_name=opt_name,
         init_image=init_image,
         image_prompts=image_prompts,
         continue_prev_run=continue_prev_run,
@@ -192,13 +201,10 @@ def generate_image(
             im_display_slot.image(im, caption="Output image", output_format="PNG")
             st.session_state["prev_im"] = im
             
-            try:
-                # Save prev_im.png
-                im.save(f"prev_image.png", format='PNG')
-            except (PermissionError,OSError):
-                # Save prev_im.png
-                im.save(f"prev_image.png", format='PNG')                
-
+            # We save the preview image using the save_preview_image() function 
+            # so we can try multiple times in case there is an error opening or saving the image.
+            save_preview_image(im)
+            
             # ref: https://stackoverflow.com/a/33117447/13095028
             #im_byte_arr = io.BytesIO()
             #im.save(im_byte_arr, format="JPEG")
@@ -262,8 +268,9 @@ def generate_image(
             "prev_run_id": prev_run_id,
             "seed": run.seed,
             "cutn": cutn,
-            "cut_pow":cut_pow,
+            "cut_pow": cut_pow,
             "step_size": step_size,
+            "opt_name": opt_name,
             "Xdim": image_x,
             "ydim": image_y,
             "vqgan_ckpt": vqgan_ckpt,
@@ -302,6 +309,8 @@ def generate_image(
             json.dump(details, f, indent=4)
 
         status_text.text("Done!")  # End of run
+        
+        vid_display_slot.video("temp.mp4")
 
     except st.StopException as e:
         # Dump output to dashboard
@@ -364,6 +373,7 @@ def generate_image(
             "cutn": cutn,
             "cut_pow": cut_pow,
             "step_size": step_size,
+            "opt_name": opt_name,
             "Xdim": image_x,
             "ydim": image_y,
             "vqgan_ckpt": vqgan_ckpt,
@@ -401,9 +411,9 @@ def generate_image(
         with open(runoutputdir / "details.json", "w") as f:
             json.dump(details, f, indent=4)
 
-        status_text.text("Done!")  # End of run        
+        status_text.text("Done!")  # End of run    
         
-        
+        vid_display_slot.video("temp.mp4")
 
 
 if __name__ == "__main__":
@@ -634,6 +644,39 @@ if __name__ == "__main__":
                 image_prompts = [Image.open(i).convert("RGB") for i in image_prompts]
         else:
             image_prompts = []
+            
+            
+        use_custom_opt = st.sidebar.checkbox(
+            "Custom Optimizer",
+            value=defaults["use_custom_opt"],
+            help="Use a custom optimizer.",
+        )
+        
+        opt_name = st.sidebar.empty()           
+        if use_custom_opt is True:
+            optimizer_list = ["Adam","Adadelta","Adagrad","AdamW","Adamax","ASGD","NAdam","RAdam","RMSprop","Rprop","SGD"]
+            opt_name = st.sidebar.selectbox(
+                    "Optimizer:", optimizer_list, index=optimizer_list.index(defaults["opt_name"]),
+                    help="""
+                Defautl = Adam
+                
+                List of optimizers:
+                
+                Adadelta: Implements Adadelta algorithm. \n
+                Adagrad: Implements Adagrad algorithm.\n
+                Adam: Implements Adam algorithm.\n
+                AdamW: Implements AdamW algorithm.\n
+                Adamax: Implements Adamax algorithm (a variant of Adam based on infinity norm).\n
+                ASGD: Implements Averaged Stochastic Gradient Descent.\n
+                NAdam: Implements NAdam algorithm.\n
+                RAdam: Implements RAdam algorithm.\n
+                RMSprop: Implements RMSprop algorithm.\n
+                Rprop: Implements the resilient backpropagation algorithm.\n
+                SGD: Implements stochastic gradient descent (optionally with momentum).\n
+                """,
+            )              
+        else:
+            opt_name = "Adam"
 
         use_mse_reg = st.sidebar.checkbox(
             "Use MSE regularization",
@@ -800,6 +843,7 @@ if __name__ == "__main__":
             seed=int(seed) if set_seed is True else None,
             cutn=int(cutn),
             step_size=float(step_size),
+            opt_name=opt_name,
             init_image=init_image,
             image_prompts=image_prompts,
             continue_prev_run=continue_prev_run,
@@ -816,5 +860,5 @@ if __name__ == "__main__":
             device=device,
         )
 
-        vid_display_slot.video("temp.mp4")
+
         # debug_slot.write(st.session_state) # DEBUG

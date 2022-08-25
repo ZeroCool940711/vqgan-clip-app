@@ -11,6 +11,8 @@ cutn: 32
 cut_pow: 1.0
 custom_step_size: false
 step_size: 0.05
+use_custom_opt: false
+opt_name: Adam
 use_starting_image: false
 use_image_prompts: false
 continue_prev_run: false

@@ -21,7 +21,56 @@ from torchvision import transforms
 import cv2
 import numpy as np
 import kornia.augmentation as K
+from torch_optimizer import DiffGrad, AdamP, RAdam
 
+
+# Set the optimiser
+def get_opt(opt_name, z, opt_lr):
+    """
+    List of optimizers 
+    Adadelta: Implements Adadelta algorithm.
+    Adagrad: Implements Adagrad algorithm.
+    Adam: Implements Adam algorithm.
+    AdamW: Implements AdamW algorithm.
+    Adamax: Implements Adamax algorithm (a variant of Adam based on infinity norm).
+    ASGD: Implements Averaged Stochastic Gradient Descent.
+    NAdam: Implements NAdam algorithm.
+    RAdam: Implements RAdam algorithm.
+    RMSprop: Implements RMSprop algorithm.
+    Rprop: Implements the resilient backpropagation algorithm.
+    SGD: Implements stochastic gradient descent (optionally with momentum)."""
+    
+    if opt_name == "Adam":
+        opt = optim.Adam([z], lr=opt_lr)
+    elif opt_name == "AdamW":
+        opt = optim.AdamW([z], lr=opt_lr)
+    elif opt_name == "Adagrad":
+        opt = optim.Adagrad([z], lr=opt_lr)
+    elif opt_name == "Adamax":
+        opt = optim.Adamax([z], lr=opt_lr)   
+    elif opt_name == "AdamP":
+        opt = AdamP([z], lr=opt_lr)     
+    elif opt_name == "Adadelta":
+        opt = optim.Adadelta([z], lr=opt_lr, eps=1e-9, weight_decay=1e-9)
+    elif opt_name == "ASGD":
+        opt = optim.ASGD([z], lr=opt_lr)
+    elif opt_name == "DiffGrad":
+        opt = DiffGrad([z], lr=opt_lr, eps=1e-9, weight_decay=1e-9)
+    elif opt_name == "NAdam":
+        opt = optim.NAdam([z], lr=opt_lr)
+    elif opt_name == "RAdam":
+        opt = RAdam([z], lr=opt_lr)
+    elif opt_name == "RMSprop":
+        opt = optim.RMSprop([z], lr=opt_lr)
+    elif opt_name == "Rprop":
+        opt = optim.Rprop([z], lr=opt_lr)
+    elif opt_name == "SGD":
+        opt = optim.SGD([z], lr=opt_lr)  
+    
+    else:
+        print(f"Unknown optimiser: {opt_name} | Are choices broken?")
+        opt = optim.Adam([z], lr=opt_lr)
+    return opt
 
 class Run:
     """
@@ -74,6 +123,7 @@ class VQGANCLIPRun(Run):
         cutn: int = 32,
         cut_pow: float = 1.0,
         step_size: float = 0.05,
+        opt_name: str = "Adam",
         mse_weight=0.5,
         mse_weight_decay=0.1,
         mse_weight_decay_steps=50,
@@ -106,6 +156,7 @@ class VQGANCLIPRun(Run):
         self.cutn = cutn
         self.cut_pow = cut_pow
         self.step_size = step_size
+        self.opt_name = opt_name
         self.device = device
 
         # Setup ------------------------------------------------------------------------------
@@ -132,6 +183,7 @@ class VQGANCLIPRun(Run):
             cutn=cutn,
             cut_pow=cut_pow,
             step_size=step_size,
+            opt_name=opt_name,
             display_freq=50,
             seed=seed,
             device=device,
@@ -167,6 +219,8 @@ class VQGANCLIPRun(Run):
         self.rotation_angle = rotation_angle
         self.zoom_factor = zoom_factor
         self.transform_interval = transform_interval
+        
+        
 
     def load_model(
         self, prev_model: nn.Module = None, prev_perceptor: nn.Module = None
@@ -252,7 +306,8 @@ class VQGANCLIPRun(Run):
             self.z = self.z.view([-1, toksY, toksX, e_dim]).permute(0, 3, 1, 2)
         self.z_orig = self.z.clone()
         self.z.requires_grad_(True)
-        self.opt = optim.Adam([self.z], lr=self.args.step_size)
+        #self.opt = optim.Adam([self.z], lr=self.args.step_size)
+        self.opt = get_opt(self.opt_name, self.z, self.args.step_size)
 
         self.normalize = transforms.Normalize(
             mean=[0.48145466, 0.4578275, 0.40821073],
@@ -393,7 +448,9 @@ class VQGANCLIPRun(Run):
                 TF.to_tensor(transformed_im).to(self.device).unsqueeze(0) * 2 - 1
             )
             self.z.requires_grad_(True)
-            self.opt = optim.Adam([self.z], lr=self.args.step_size)
+            
+            #self.opt = optim.Adam([self.z], lr=self.args.step_size)
+            self.opt = get_opt(self.opt_name, self.z, self.args.step_size)
 
             for _ in range(self.transform_interval):
                 # Forward prop
