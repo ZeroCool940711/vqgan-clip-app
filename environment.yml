@@ -32,6 +32,8 @@ dependencies:
     # - imgtag
     - einops
     - transformers
+    - torch-optimizer
+    - retry
     - git+https://github.com/openai/CLIP
     # For guided diffusion
     - lpips
